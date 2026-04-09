@@ -8,16 +8,16 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# Сначала копируем только requirements.txt, чтобы Docker кэшировал слои
 COPY requirements.txt .
 
-# Обновляем pip и устанавливаем всё одной командой
+# 1. Обновляем pip
 RUN pip install --upgrade pip
+
+# 2. Устанавливаем зависимости из файла
 RUN pip install --no-cache-dir -r requirements.txt
-# Если chat-downloader нет в requirements.txt, ставим его здесь принудительно
-RUN pip install --upgrade chat-downloader nest_asyncio
+
+# 3. ПРИНУДИТЕЛЬНО обновляем chat-downloader до последней версии
+RUN pip install --upgrade --no-cache-dir chat-downloader
 
 COPY . .
-
 CMD ["python", "main.py"]
