@@ -74,26 +74,30 @@ async def youtube_bot_loop():
             logger.info(f"Подключение напрямую к чату ID: {video_id}")
 
             try:
-                # 2. Подключаемся через item_id, чтобы избежать парсинга страницы
-                chat = downloader.get_chat(item_id=video_id)
+                # Используем URL, но принудительно отключаем парсинг метаданных страницы
+                # Это должно убрать ошибку "Unable to parse initial video data"
+                url = f"https://youtube.com{video_id}"
+                chat = downloader.get_chat(
+                    url=url,
+                    ignore_exceptions=['JSONDecodeError'] # Игнорируем ошибки кривого парсинга
+                )
                 
                 for message in chat:
-                    # Извлекаем данные автора
                     author = message.get('author', {})
                     author_id = author.get('id')
                     
                     if author_id and author_id not in seen_users:
                         seen_users.add(author_id)
-                        # Очищаем имя от символа @ и пробелов
                         user_name = author.get('name', 'User').lstrip('@').strip()
                         await send_message(f"Новый котэк на Ютубе❤️: {user_name}")
                     
-                    # Небольшая пауза для корректной работы асинхронности
                     await asyncio.sleep(0.1)
 
             except Exception as e:
-                logger.error(f"Ошибка внутри итератора чата: {e}")
+                # Если ошибка 'Unable to parse', пробуем еще более простой метод
+                logger.error(f"Ошибка при чтении чата: {e}")
                 await asyncio.sleep(30)
+
 
             logger.info("Цикл чата прерван. Перепроверка через 5 минут...")
             await asyncio.sleep(300)
