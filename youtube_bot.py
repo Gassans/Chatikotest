@@ -13,9 +13,9 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
 YOUTUBE_CHANNEL_ID = os.environ["YOUTUBE_CHANNEL_ID"]
+COOKIES_FILE = "cookies.txt"  # Путь к cookies из браузера
 
 bot = Bot(token=TELEGRAM_TOKEN)
-
 
 async def send_message(text):
     try:
@@ -24,9 +24,9 @@ async def send_message(text):
         logger.error(f"Ошибка Telegram: {e}")
 
 
-# ✅ ОДИН ЗАПРОС (100 квот)
 async def get_live_video_id(youtube):
     try:
+        # Сначала live
         response = youtube.search().list(
             part='id',
             channelId=YOUTUBE_CHANNEL_ID,
@@ -38,49 +38,50 @@ async def get_live_video_id(youtube):
         if response.get('items'):
             return response['items'][0]['id']['videoId']
 
+        # fallback — премьера
+        response = youtube.search().list(
+            part='id',
+            channelId=YOUTUBE_CHANNEL_ID,
+            eventType='upcoming',
+            type='video',
+            maxResults=1
+        ).execute()
+
+        if response.get('items'):
+            return response['items'][0]['id']['videoId']
+
     except Exception as e:
         logger.error(f"Ошибка API: {e}")
-
     return None
 
 
 def chat_worker(url, seen_users, loop):
-    downloader = ChatDownloader()
-
     while True:
         try:
-            logger.info("🔌 Подключаемся к чату...")
-
-            chat = downloader.get_chat(url, message_groups=['messages'])
-
-            logger.info("✅ Чат подключен")
+            logger.info("Пробуем подключиться к чату...")
+            downloader = ChatDownloader(cookies=COOKIES_FILE)
+            chat = downloader.get_chat(url, message_groups=["messages"])
+            logger.info("✅ Подключились к чату")
 
             last_message_time = time.time()
 
             for message in chat:
                 try:
                     last_message_time = time.time()
-
-                    author_id = message.get('author_id')
+                    author_id = message.get("author_id")
                     if not author_id:
                         continue
 
-                    # ❗ защита от дублей
                     if author_id not in seen_users:
                         seen_users.add(author_id)
-
-                        name = message.get('author', {}).get('name', 'User')
-                        name = name.lstrip('@').strip()
-
+                        name = message.get("author", {}).get("name", "User").lstrip("@").strip()
                         asyncio.run_coroutine_threadsafe(
-                            send_message(f"Новый котэк на Ютубе❤️: {name}"),
-                            loop
+                            send_message(f"Новый котэк на Ютубе❤️: {name}"), loop
                         )
 
                 except Exception as e:
                     logger.error(f"Ошибка сообщения: {e}")
 
-                # ❗ если чат завис
                 if time.time() - last_message_time > 30:
                     logger.warning("⚠️ Нет сообщений 30 сек → реконнект")
                     break
@@ -90,58 +91,34 @@ def chat_worker(url, seen_users, loop):
 
         except Exception as e:
             logger.error(f"Ошибка chat-downloader: {e}")
-            logger.info("⏳ Повтор через 5 секунд...")
-            time.sleep(5)
+            logger.info("Повтор через 3 секунды...")
+            time.sleep(3)
 
 
 async def youtube_bot_loop():
-    youtube = build(
-        'youtube',
-        'v3',
-        developerKey=YOUTUBE_API_KEY,
-        static_discovery=False
-    )
-
-    loop = asyncio.get_running_loop()
-    current_video_id = None
+    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY, static_discovery=False)
     seen_users = set()
+    loop = asyncio.get_running_loop()
 
     while True:
         try:
             video_id = await get_live_video_id(youtube)
-
-            # ❗ если нет стрима
             if not video_id:
-                logger.info("❌ Стрим не найден. Ждём 5 минут...")
+                logger.info("Стрим не найден. Ждём 5 минут...")
                 await asyncio.sleep(300)
                 continue
 
-            # ❗ если новый стрим
-            if video_id != current_video_id:
-                logger.info(f"🔥 Новый стрим: {video_id}")
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            logger.info("===================================")
+            logger.info(f"СТРИМ НАЙДЕН: {url}")
+            logger.info("===================================")
 
-                current_video_id = video_id
-                seen_users.clear()  # 💥 ВАЖНО
+            await asyncio.sleep(20)  # чат “созревает”
 
-                url = f"https://www.youtube.com/watch?v={video_id}"
+            # запускаем chat-downloader в отдельном потоке
+            await loop.run_in_executor(None, chat_worker, url, seen_users, loop)
 
-                logger.info("===================================")
-                logger.info(f"СТРИМ: {url}")
-                logger.info("===================================")
-
-                # даём чату стабилизироваться
-                await asyncio.sleep(20)
-
-                # запускаем поток чата
-                loop.run_in_executor(
-                    None,
-                    chat_worker,
-                    url,
-                    seen_users,
-                    loop
-                )
-
-            # ❗ проверка раз в 5 минут (экономим квоты)
+            logger.info("Чат завершён. Проверка через 5 минут...")
             await asyncio.sleep(300)
 
         except Exception as e:
