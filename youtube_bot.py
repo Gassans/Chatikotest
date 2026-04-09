@@ -1,8 +1,7 @@
 import os
 import asyncio
 import logging
-import time
-from chat_downloader import ChatDownloader
+import aiohttp
 from googleapiclient.discovery import build
 from telegram import Bot
 
@@ -13,9 +12,9 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
 YOUTUBE_CHANNEL_ID = os.environ["YOUTUBE_CHANNEL_ID"]
-COOKIES_FILE = "cookies.txt"  # Путь к cookies из браузера
 
 bot = Bot(token=TELEGRAM_TOKEN)
+
 
 async def send_message(text):
     try:
@@ -24,10 +23,10 @@ async def send_message(text):
         logger.error(f"Ошибка Telegram: {e}")
 
 
-async def get_live_video_id(youtube):
+# 🔍 ищем стрим (редко)
+async def get_live_chat_id(youtube):
     try:
-        # Сначала live
-        response = youtube.search().list(
+        search = youtube.search().list(
             part='id',
             channelId=YOUTUBE_CHANNEL_ID,
             eventType='live',
@@ -35,96 +34,141 @@ async def get_live_video_id(youtube):
             maxResults=1
         ).execute()
 
-        if response.get('items'):
-            return response['items'][0]['id']['videoId']
+        if not search.get('items'):
+            return None, None
 
-        # fallback — премьера
-        response = youtube.search().list(
-            part='id',
-            channelId=YOUTUBE_CHANNEL_ID,
-            eventType='upcoming',
-            type='video',
-            maxResults=1
+        video_id = search['items'][0]['id']['videoId']
+
+        details = youtube.videos().list(
+            part='liveStreamingDetails',
+            id=video_id
         ).execute()
 
-        if response.get('items'):
-            return response['items'][0]['id']['videoId']
+        items = details.get('items')
+        if not items:
+            return video_id, None
+
+        chat_id = items[0].get('liveStreamingDetails', {}).get('activeLiveChatId')
+
+        return video_id, chat_id
 
     except Exception as e:
         logger.error(f"Ошибка API: {e}")
+        return None, None
+
+
+# 🔥 получаем continuation (ОДИН РАЗ)
+async def get_initial_continuation(video_id):
+    url = f"https://www.youtube.com/watch?v={video_id}"
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            html = await resp.text()
+
+    # ищем continuation токен
+    import re
+    match = re.search(r'"continuation":"(.*?)"', html)
+
+    if match:
+        return match.group(1)
+
     return None
 
 
-def chat_worker(url, seen_users, loop):
-    while True:
-        try:
-            logger.info("Пробуем подключиться к чату...")
-            downloader = ChatDownloader(cookies=COOKIES_FILE)
-            chat = downloader.get_chat(url, message_groups=["messages"])
-            logger.info("✅ Подключились к чату")
+# 🔥 основной цикл чата
+async def chat_loop(continuation, seen_users):
+    url = "https://www.youtube.com/youtubei/v1/live_chat/get_live_chat"
 
-            last_message_time = time.time()
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0"
+    }
 
-            for message in chat:
-                try:
-                    last_message_time = time.time()
-                    author_id = message.get("author_id")
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                payload = {
+                    "context": {
+                        "client": {
+                            "clientName": "WEB",
+                            "clientVersion": "2.20210721.00.00"
+                        }
+                    },
+                    "continuation": continuation
+                }
+
+                async with session.post(url, json=payload, headers=headers) as resp:
+                    data = await resp.json()
+
+                actions = data.get("continuationContents", {}) \
+                              .get("liveChatContinuation", {}) \
+                              .get("actions", [])
+
+                for action in actions:
+                    item = action.get("addChatItemAction", {}).get("item", {})
+                    message = item.get("liveChatTextMessageRenderer")
+
+                    if not message:
+                        continue
+
+                    author_id = message.get("authorExternalChannelId")
                     if not author_id:
                         continue
 
                     if author_id not in seen_users:
                         seen_users.add(author_id)
-                        name = message.get("author", {}).get("name", "User").lstrip("@").strip()
-                        asyncio.run_coroutine_threadsafe(
-                            send_message(f"Новый котэк на Ютубе❤️: {name}"), loop
-                        )
 
-                except Exception as e:
-                    logger.error(f"Ошибка сообщения: {e}")
+                        name = message.get("authorName", {}).get("simpleText", "User")
+                        name = name.lstrip('@').strip()
 
-                if time.time() - last_message_time > 30:
-                    logger.warning("⚠️ Нет сообщений 30 сек → реконнект")
-                    break
+                        await send_message(f"Новый котэк на Ютубе❤️: {name}")
 
-            logger.warning("⚠️ Чат завершён → реконнект через 3 сек")
-            time.sleep(3)
+                # 🔁 берем новый continuation
+                continuations = data.get("continuationContents", {}) \
+                                    .get("liveChatContinuation", {}) \
+                                    .get("continuations", [])
 
-        except Exception as e:
-            logger.error(f"Ошибка chat-downloader: {e}")
-            logger.info("Повтор через 3 секунды...")
-            time.sleep(3)
+                if continuations:
+                    continuation = continuations[0] \
+                        .get("invalidationContinuationData", {}) \
+                        .get("continuation") or \
+                        continuations[0] \
+                        .get("timedContinuationData", {}) \
+                        .get("continuation")
+
+                await asyncio.sleep(2)  # ⚡ быстро
+
+            except Exception as e:
+                logger.error(f"Ошибка chat_loop: {e}")
+                await asyncio.sleep(5)
 
 
-async def youtube_bot_loop():
-    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY, static_discovery=False)
+# 🚀 главный цикл
+async def main():
+    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY, static_discovery=False)
     seen_users = set()
-    loop = asyncio.get_running_loop()
 
     while True:
-        try:
-            video_id = await get_live_video_id(youtube)
-            if not video_id:
-                logger.info("Стрим не найден. Ждём 5 минут...")
-                await asyncio.sleep(300)
-                continue
+        video_id, chat_id = await get_live_chat_id(youtube)
 
-            url = f"https://www.youtube.com/watch?v={video_id}"
-            logger.info("===================================")
-            logger.info(f"СТРИМ НАЙДЕН: {url}")
-            logger.info("===================================")
-
-            await asyncio.sleep(20)  # чат “созревает”
-
-            # запускаем chat-downloader в отдельном потоке
-            await loop.run_in_executor(None, chat_worker, url, seen_users, loop)
-
-            logger.info("Чат завершён. Проверка через 5 минут...")
+        if not video_id or not chat_id:
+            logger.info("Стрим не найден. Ждём 5 минут...")
             await asyncio.sleep(300)
+            continue
 
-        except Exception as e:
-            logger.error(f"Глобальная ошибка: {e}")
+        logger.info(f"Стрим найден: {video_id}")
+
+        continuation = await get_initial_continuation(video_id)
+
+        if not continuation:
+            logger.error("Не удалось получить continuation")
             await asyncio.sleep(60)
+            continue
+
+        logger.info("Подключились к чату через youtubei 🔥")
+
+        await chat_loop(continuation, seen_users)
 
 
 if __name__ == "__main__":
-    asyncio.run(youtube_bot_loop())
+    asyncio.run(main())
