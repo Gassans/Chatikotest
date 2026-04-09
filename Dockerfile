@@ -1,24 +1,26 @@
-# Используем официальный образ Python
 FROM python:3.9-slim
 
-# Устанавливаем необходимые системные зависимости
+# Устанавливаем системные зависимости
 RUN apt-get update && apt-get install -y \
     gcc \
     libffi-dev \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем рабочую директорию внутри контейнера
+# Обновляем pip
+RUN pip install --upgrade pip
+
+# Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Копируем файлы проекта в контейнер
+# Копируем файлы проекта
 COPY . /app
 
-# Устанавливаем зависимости из requirements.txt
+# Устанавливаем зависимости
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Устанавливаем nest_asyncio (если ты его используешь для Twitch-бота)
-RUN pip install nest_asyncio
+# Устанавливаем nest_asyncio отдельно
+RUN pip install nest_asyncio==1.6.0
 
-# Указываем команду запуска (запускай нужный бот по умолчанию)
+# Команда запуска
 CMD ["python", "main.py"]
