@@ -16,7 +16,7 @@ COPY . /app
 
 # Устанавливаем зависимости из requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
-
+RUN pip install chat-downloader
 # Устанавливаем nest_asyncio (если ты его используешь для Twitch-бота)
 RUN pip install nest_asyncio
 
