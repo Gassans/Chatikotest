@@ -29,6 +29,7 @@ async def get_live_info(youtube):
         video_id = search['items'][0]['id']['videoId']
         
         video_details = youtube.videos().list(part='liveStreamingDetails', id=video_id).execute()
+        if not video_details.get('items'): return video_id, None
         chat_id = video_details['items'][0].get('liveStreamingDetails', {}).get('activeLiveChatId')
         return video_id, chat_id
     except Exception as e:
@@ -47,7 +48,16 @@ async def youtube_bot_loop():
                 continue
 
             logger.info(f"Подключено к чату: {live_chat_id}")
-            next_page_token = None
+            
+            # --- ИСПРАВЛЕНИЕ: Пропускаем историю сообщений ---
+            # Делаем один холостой запрос, чтобы получить актуальный токен будущего
+            first_response = youtube.liveChatMessages().list(
+                liveChatId=live_chat_id,
+                part='snippet'
+            ).execute()
+            next_page_token = first_response.get('nextPageToken')
+            logger.info("История чата пропущена, ждем новых сообщений...")
+            # ------------------------------------------------
 
             while True:
                 try:
@@ -58,6 +68,7 @@ async def youtube_bot_loop():
                     )
                     response = request.execute()
                     
+                    # Обрабатываем сообщения (теперь здесь будут только новые)
                     for item in response.get('items', []):
                         author_id = item['authorDetails']['channelId']
                         if author_id not in seen_users:
@@ -67,18 +78,16 @@ async def youtube_bot_loop():
 
                     next_page_token = response.get('nextPageToken')
                     
-                    
                     polling = response.get('pollingIntervalMillis', 10000) / 1000
                     await asyncio.sleep(max(polling, 15.0)) 
 
                 except Exception as e:
-                   
                     if "rateLimitExceeded" in str(e):
                         logger.warning("YouTube просит снизить скорость. Ждем 30 секунд...")
                         await asyncio.sleep(30)
                         continue 
                     
-                    logger.error(f"Критическая ошибка чата: {e}")
+                    logger.error(f"Ошибка чата: {e}")
                     break 
 
         except Exception as e:
