@@ -49,15 +49,16 @@ async def youtube_bot_loop():
 
             logger.info(f"Подключено к чату: {live_chat_id}")
             
-            # --- ИСПРАВЛЕНИЕ: Пропускаем историю сообщений ---
-            # Делаем один холостой запрос, чтобы получить актуальный токен будущего
+            # Холостой запрос
             first_response = youtube.liveChatMessages().list(
                 liveChatId=live_chat_id,
                 part='snippet'
             ).execute()
             next_page_token = first_response.get('nextPageToken')
-            logger.info("История чата пропущена, ждем новых сообщений...")
-            # ------------------------------------------------
+            
+            logger.info("История чата пропущена. Ждем 5 сек перед началом...")
+            # Ждем чуть-чуть, чтобы YouTube не выдал rateLimitExceeded на старте
+            await asyncio.sleep(5)
 
             while True:
                 try:
@@ -68,7 +69,6 @@ async def youtube_bot_loop():
                     )
                     response = request.execute()
                     
-                    # Обрабатываем сообщения (теперь здесь будут только новые)
                     for item in response.get('items', []):
                         author_id = item['authorDetails']['channelId']
                         if author_id not in seen_users:
@@ -78,12 +78,12 @@ async def youtube_bot_loop():
 
                     next_page_token = response.get('nextPageToken')
                     
-                    polling = response.get('pollingIntervalMillis', 10000) / 1000
-                    await asyncio.sleep(max(polling, 15.0)) 
+                    # Интервал 10 секунд — золотая середина
+                    await asyncio.sleep(10) 
 
                 except Exception as e:
                     if "rateLimitExceeded" in str(e):
-                        logger.warning("YouTube просит снизить скорость. Ждем 30 секунд...")
+                        logger.warning("YouTube просит паузу. Ждем 30 секунд...")
                         await asyncio.sleep(30)
                         continue 
                     
