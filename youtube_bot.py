@@ -24,7 +24,6 @@ async def send_message(text):
         logger.error(f"Ошибка ТГ: {e}")
 
 async def get_live_video_id(youtube):
-    """Поиск активного стрима через API (100 квот)"""
     try:
         response = youtube.search().list(
             part='id',
@@ -40,15 +39,12 @@ async def get_live_video_id(youtube):
     return None
 
 def download_chat(url, seen_users, loop):
-    """Запуск yt_dlp для мониторинга чата"""
-    
     def comment_callback(comment):
         author_id = comment.get('author_id')
         if author_id and author_id not in seen_users:
             seen_users.add(author_id)
             raw_name = comment.get('author', 'User')
             user_name = raw_name.lstrip('@').strip()
-            # Отправка уведомления в основной цикл asyncio
             asyncio.run_coroutine_threadsafe(
                 send_message(f"Новый котэк на Ютубе❤️: {user_name}"), 
                 loop
@@ -81,21 +77,20 @@ async def youtube_bot_loop():
                 await asyncio.sleep(300)
                 continue
 
-            # Формируем ссылку максимально явно
-            base_url = "https://youtube.com"
-            url = f"{base_url}{video_id}"
+            # ПРЯМАЯ СКЛЕЙКА БЕЗ ПЕРЕМЕННЫХ
+            v_id = str(video_id).strip()
+            url = "https://youtube.com" + v_id
             
-            logger.info(f"URL ДЛЯ ПРОВЕРКИ: {url}")
-            logger.info(f"Запускаем безлимитный чат для {video_id}...")
+            logger.info("------------------------------------")
+            logger.info(f"ID ИЗ API: {v_id}")
+            logger.info(f"ИТОГОВЫЙ URL: {url}")
+            logger.info("------------------------------------")
 
-            # Запуск yt_dlp в отдельном потоке (executor)
             await loop.run_in_executor(None, download_chat, url, seen_users, loop)
-
-            logger.info("Пауза перед переподключением...")
             await asyncio.sleep(30)
 
         except Exception as e:
-            logger.error(f"Глобальная ошибка YouTube цикла: {e}")
+            logger.error(f"Глобальная ошибка: {e}")
             await asyncio.sleep(60)
 
 if __name__ == "__main__":
