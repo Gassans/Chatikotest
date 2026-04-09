@@ -8,6 +8,7 @@ from telegram import Bot
 
 logging.basicConfig(level=logging.INFO)
 
+# Переменные окружения
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
@@ -23,67 +24,56 @@ async def send_message(text):
         logging.error(f"Ошибка отправки в Telegram: {e}")
 
 
-async def get_active_or_upcoming_stream(youtube, channel_id):
-    """Ищем активный стрим или премьеру с liveChatId"""
+# Ищем стрим или премьеру
+async def get_live_video_id(youtube, channel_id):
     try:
         request = youtube.search().list(
-            part="id",
+            part='id',
             channelId=channel_id,
-            type="video",
-            order="date",
-            maxResults=5
+            eventType='live',  # live или upcoming для премьеры
+            type='video',
+            maxResults=1
         )
         response = request.execute()
-
-        for item in response.get("items", []):
-            video_id = item["id"]["videoId"]
-
-            # Проверяем детали стрима
-            details_request = youtube.videos().list(
-                part="liveStreamingDetails",
-                id=video_id
-            )
-            details_response = details_request.execute()
-            live_details = details_response["items"][0].get("liveStreamingDetails", {})
-
-            live_chat_id = live_details.get("activeLiveChatId")
-            if live_chat_id:
-                return video_id, live_chat_id
-
+        items = response.get('items', [])
+        if items:
+            return items[0]['id']['videoId']
     except HttpError as e:
-        logging.error(f"Ошибка YouTube API: {e}")
-    except Exception as e:
-        logging.error(f"Ошибка при поиске стрима: {e}")
-
-    return None, None
+        logging.error(f"Ошибка YouTube API при получении live video: {e}")
+    return None
 
 
 async def youtube_bot_loop():
-    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
     seen_users = set()
+    current_video_id = None
 
     while True:
         try:
-            video_id, live_chat_id = await get_active_or_upcoming_stream(
-                youtube, YOUTUBE_CHANNEL_ID
-            )
+            # 🔍 Ищем стрим только если не нашли ранее
+            if not current_video_id:
+                current_video_id = await get_live_video_id(youtube, YOUTUBE_CHANNEL_ID)
 
-            if not video_id:
-                logging.info("Стрим/премьера не найдены. Проверка через 2 минуты.")
-                await asyncio.sleep(120)
-                continue
+                if not current_video_id:
+                    logging.info("Стрим не найден. Проверка через 5 минут.")
+                    await asyncio.sleep(300)
+                    continue
 
-            logging.info(f"Найден стрим/премьера: {video_id}, liveChatId: {live_chat_id}")
+                logging.info(f"Найден стрим: {current_video_id}")
 
-            # 🔁 Подключаем pytchat к liveChatId
+            # ⏳ Ждём готовности чата (важно для premiere)
+            logging.info("Ждём готовности чата...")
+            await asyncio.sleep(30)
+
+            # 🔁 Подключаемся к pytchat с указанием channel_id
             chat = None
             while not chat:
                 try:
-                    chat = pytchat.create(video_id=video_id, interruptable=True)
+                    chat = pytchat.create(video_id=current_video_id, channel_id=YOUTUBE_CHANNEL_ID)
                     logging.info("Успешно подключились к чату")
                 except Exception as e:
                     logging.error(f"pytchat не готов: {e}")
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(15)
 
             # 📖 Читаем чат
             while chat.is_alive():
@@ -94,18 +84,18 @@ async def youtube_bot_loop():
                             seen_users.add(author_id)
                             user_name = c.author.name.lstrip('@').strip()
                             await send_message(f"Новый котэк на Ютубе❤️: {user_name}")
-
                     await asyncio.sleep(1)
                 except Exception as e:
                     logging.error(f"Ошибка чтения чата: {e}")
                     await asyncio.sleep(5)
 
-            # ❗ Если чат умер, сбрасываем
+            # ❗ Если чат завершился — сбрасываем video_id
             logging.info("Чат завершён. Сбрасываем video_id.")
-            await asyncio.sleep(30)
+            current_video_id = None
+            await asyncio.sleep(60)
 
         except Exception as e:
-            logging.error(f"Глобальная ошибка цикла: {e}")
+            logging.error(f"Глобальная ошибка: {e}")
             await asyncio.sleep(60)
 
 
