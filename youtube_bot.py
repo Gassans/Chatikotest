@@ -24,6 +24,24 @@ async def send_message(text):
     except Exception as e:
         logging.error(f"Ошибка отправки в Telegram: {e}")
 
+# --- Исправленная функция для получения live видео или премьеры ---
+async def get_live_video_id(youtube, channel_id):
+    try:
+        request = youtube.search().list(
+            part='id',
+            channelId=channel_id,
+            eventType='live',  # live стримы и премьеры
+            type='video'
+        )
+        response = request.execute()
+        if response['items']:
+            return response['items'][0]['id']['videoId']
+    except HttpError as e:
+        logging.error(f"Ошибка YouTube API при получении live video: {e}")
+    except Exception as e:
+        logging.error(f"Ошибка при поиске live видео: {e}")
+    return None
+
 async def youtube_bot_loop():
     youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
     seen_users = set()
