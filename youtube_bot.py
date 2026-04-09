@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import time
 from chat_downloader import ChatDownloader
 from googleapiclient.discovery import build
 from telegram import Bot
@@ -36,7 +37,7 @@ async def get_live_video_id(youtube):
         if response.get('items'):
             return response['items'][0]['id']['videoId']
 
-        # fallback — ищем upcoming (премьеры)
+        # fallback — премьеры
         response = youtube.search().list(
             part='id',
             channelId=YOUTUBE_CHANNEL_ID,
@@ -54,37 +55,52 @@ async def get_live_video_id(youtube):
     return None
 
 
-def run_chat_downloader(url, seen_users, loop):
-    downloader = ChatDownloader()
+def chat_worker(url, seen_users, loop):
+    while True:
+        try:
+            logger.info("Пробуем подключиться к чату...")
 
-    try:
-        chat = downloader.get_chat(
-            url,
-            message_groups=['messages'],  # только сообщения
-        )
+            downloader = ChatDownloader()
+            chat = downloader.get_chat(url, message_groups=['messages'])
 
-        for message in chat:
-            try:
-                author_id = message.get('author_id')
-                if not author_id:
-                    continue
+            logger.info("✅ Подключились к чату")
 
-                if author_id not in seen_users:
-                    seen_users.add(author_id)
+            last_message_time = time.time()
 
-                    name = message.get('author', {}).get('name', 'User')
-                    name = name.lstrip('@').strip()
+            for message in chat:
+                try:
+                    last_message_time = time.time()
 
-                    asyncio.run_coroutine_threadsafe(
-                        send_message(f"Новый котэк на Ютубе❤️: {name}"),
-                        loop
-                    )
+                    author_id = message.get('author_id')
+                    if not author_id:
+                        continue
 
-            except Exception as e:
-                logger.error(f"Ошибка обработки сообщения: {e}")
+                    if author_id not in seen_users:
+                        seen_users.add(author_id)
 
-    except Exception as e:
-        logger.error(f"chat-downloader упал: {e}")
+                        name = message.get('author', {}).get('name', 'User')
+                        name = name.lstrip('@').strip()
+
+                        asyncio.run_coroutine_threadsafe(
+                            send_message(f"Новый котэк на Ютубе❤️: {name}"),
+                            loop
+                        )
+
+                except Exception as e:
+                    logger.error(f"Ошибка сообщения: {e}")
+
+                # ⚠️ если чат "завис"
+                if time.time() - last_message_time > 30:
+                    logger.warning("⚠️ Нет сообщений 30 сек → реконнект")
+                    break
+
+            logger.warning("⚠️ Чат завершён → реконнект через 3 сек")
+            time.sleep(3)
+
+        except Exception as e:
+            logger.error(f"Ошибка chat-downloader: {e}")
+            logger.info("Повтор через 5 секунд...")
+            time.sleep(5)
 
 
 async def youtube_bot_loop():
@@ -97,20 +113,23 @@ async def youtube_bot_loop():
             video_id = await get_live_video_id(youtube)
 
             if not video_id:
-                logger.info("Стрим/премьера не найдены. Ждём 5 минут...")
+                logger.info("Стрим не найден. Ждём 5 минут...")
                 await asyncio.sleep(300)
                 continue
 
             url = f"https://www.youtube.com/watch?v={video_id}"
 
             logger.info("===================================")
-            logger.info(f"Подключаемся к: {url}")
+            logger.info(f"СТРИМ НАЙДЕН: {url}")
             logger.info("===================================")
 
-            # запускаем в отдельном потоке
+            # ⚠️ даём чату “созреть” (особенно премьеры)
+            await asyncio.sleep(20)
+
+            # запускаем chat-downloader в отдельном потоке
             await loop.run_in_executor(
                 None,
-                run_chat_downloader,
+                chat_worker,
                 url,
                 seen_users,
                 loop
