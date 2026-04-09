@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import aiohttp
+import re
 from googleapiclient.discovery import build
 from telegram import Bot
 
@@ -65,8 +66,6 @@ async def get_initial_continuation(video_id):
         async with session.get(url) as resp:
             html = await resp.text()
 
-    # ищем continuation токен
-    import re
     match = re.search(r'"continuation":"(.*?)"', html)
 
     if match:
@@ -83,6 +82,8 @@ async def chat_loop(continuation, seen_users):
         "Content-Type": "application/json",
         "User-Agent": "Mozilla/5.0"
     }
+
+    is_first_batch = True  # 👈 ВАЖНО
 
     async with aiohttp.ClientSession() as session:
         while True:
@@ -104,26 +105,31 @@ async def chat_loop(continuation, seen_users):
                               .get("liveChatContinuation", {}) \
                               .get("actions", [])
 
-                for action in actions:
-                    item = action.get("addChatItemAction", {}).get("item", {})
-                    message = item.get("liveChatTextMessageRenderer")
+                # ❌ ПЕРВЫЙ БАТЧ ПРОПУСКАЕМ
+                if is_first_batch:
+                    logger.info("Пропускаем старые сообщения...")
+                    is_first_batch = False
+                else:
+                    for action in actions:
+                        item = action.get("addChatItemAction", {}).get("item", {})
+                        message = item.get("liveChatTextMessageRenderer")
 
-                    if not message:
-                        continue
+                        if not message:
+                            continue
 
-                    author_id = message.get("authorExternalChannelId")
-                    if not author_id:
-                        continue
+                        author_id = message.get("authorExternalChannelId")
+                        if not author_id:
+                            continue
 
-                    if author_id not in seen_users:
-                        seen_users.add(author_id)
+                        if author_id not in seen_users:
+                            seen_users.add(author_id)
 
-                        name = message.get("authorName", {}).get("simpleText", "User")
-                        name = name.lstrip('@').strip()
+                            name = message.get("authorName", {}).get("simpleText", "User")
+                            name = name.lstrip('@').strip()
 
-                        await send_message(f"Новый котэк на Ютубе❤️: {name}")
+                            await send_message(f"Новый котэк на Ютубе❤️: {name}")
 
-                # 🔁 берем новый continuation
+                # 🔁 новый continuation
                 continuations = data.get("continuationContents", {}) \
                                     .get("liveChatContinuation", {}) \
                                     .get("continuations", [])
@@ -146,28 +152,41 @@ async def chat_loop(continuation, seen_users):
 # 🚀 главный цикл
 async def main():
     youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY, static_discovery=False)
+
     seen_users = set()
+    current_video_id = None
 
     while True:
-        video_id, chat_id = await get_live_chat_id(youtube)
+        try:
+            video_id, chat_id = await get_live_chat_id(youtube)
 
-        if not video_id or not chat_id:
-            logger.info("Стрим не найден. Ждём 5 минут...")
-            await asyncio.sleep(300)
-            continue
+            if not video_id or not chat_id:
+                logger.info("Стрим не найден. Ждём 5 минут...")
+                await asyncio.sleep(300)
+                continue
 
-        logger.info(f"Стрим найден: {video_id}")
+            # 🔥 если новый стрим — сбрасываем пользователей
+            if video_id != current_video_id:
+                logger.info("Новый стрим → очищаем список пользователей")
+                seen_users.clear()
+                current_video_id = video_id
 
-        continuation = await get_initial_continuation(video_id)
+            logger.info(f"Стрим найден: {video_id}")
 
-        if not continuation:
-            logger.error("Не удалось получить continuation")
+            continuation = await get_initial_continuation(video_id)
+
+            if not continuation:
+                logger.error("Не удалось получить continuation")
+                await asyncio.sleep(60)
+                continue
+
+            logger.info("Подключились к чату через youtubei 🔥")
+
+            await chat_loop(continuation, seen_users)
+
+        except Exception as e:
+            logger.error(f"Глобальная ошибка: {e}")
             await asyncio.sleep(60)
-            continue
-
-        logger.info("Подключились к чату через youtubei 🔥")
-
-        await chat_loop(continuation, seen_users)
 
 
 if __name__ == "__main__":
