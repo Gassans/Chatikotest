@@ -73,18 +73,17 @@ async def youtube_bot_loop():
             video_id = await get_live_video_id(youtube)
             
             if not video_id:
-                logger.info("Стрим не найден. Спим 5 минут...")
+                logger.info("Стрим не найден...")
                 await asyncio.sleep(300)
                 continue
 
-            # ПРЯМАЯ СКЛЕЙКА БЕЗ ПЕРЕМЕННЫХ
             v_id = str(video_id).strip()
-            url = "https://youtube.com" + v_id
+            # Тот самый правильный URL
+            url = f"https://www.youtube.com/watch?v={v_id}"
             
-            logger.info("------------------------------------")
-            logger.info(f"ID ИЗ API: {v_id}")
-            logger.info(f"ИТОГОВЫЙ URL: {url}")
-            logger.info("------------------------------------")
+            # МАЯЧОК ДЛЯ ЛОГОВ (Проверь его в Railway!)
+            logger.info(f"--- БЕЗЛИМИТ ЗАПУЩЕН ---")
+            logger.info(f"URL: {url}")
 
             await loop.run_in_executor(None, download_chat, url, seen_users, loop)
             await asyncio.sleep(30)
