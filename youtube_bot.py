@@ -24,24 +24,13 @@ async def send_message(text):
         logger.error(f"Ошибка Telegram: {e}")
 
 
+# ✅ ОДИН ЗАПРОС (100 квот)
 async def get_live_video_id(youtube):
     try:
         response = youtube.search().list(
             part='id',
             channelId=YOUTUBE_CHANNEL_ID,
             eventType='live',
-            type='video',
-            maxResults=1
-        ).execute()
-
-        if response.get('items'):
-            return response['items'][0]['id']['videoId']
-
-        # fallback — премьеры
-        response = youtube.search().list(
-            part='id',
-            channelId=YOUTUBE_CHANNEL_ID,
-            eventType='upcoming',
             type='video',
             maxResults=1
         ).execute()
@@ -56,14 +45,15 @@ async def get_live_video_id(youtube):
 
 
 def chat_worker(url, seen_users, loop):
+    downloader = ChatDownloader()
+
     while True:
         try:
-            logger.info("Пробуем подключиться к чату...")
+            logger.info("🔌 Подключаемся к чату...")
 
-            downloader = ChatDownloader()
             chat = downloader.get_chat(url, message_groups=['messages'])
 
-            logger.info("✅ Подключились к чату")
+            logger.info("✅ Чат подключен")
 
             last_message_time = time.time()
 
@@ -75,6 +65,7 @@ def chat_worker(url, seen_users, loop):
                     if not author_id:
                         continue
 
+                    # ❗ защита от дублей
                     if author_id not in seen_users:
                         seen_users.add(author_id)
 
@@ -89,7 +80,7 @@ def chat_worker(url, seen_users, loop):
                 except Exception as e:
                     logger.error(f"Ошибка сообщения: {e}")
 
-                # ⚠️ если чат "завис"
+                # ❗ если чат завис
                 if time.time() - last_message_time > 30:
                     logger.warning("⚠️ Нет сообщений 30 сек → реконнект")
                     break
@@ -99,43 +90,58 @@ def chat_worker(url, seen_users, loop):
 
         except Exception as e:
             logger.error(f"Ошибка chat-downloader: {e}")
-            logger.info("Повтор через 5 секунд...")
+            logger.info("⏳ Повтор через 5 секунд...")
             time.sleep(5)
 
 
 async def youtube_bot_loop():
-    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY, static_discovery=False)
-    seen_users = set()
+    youtube = build(
+        'youtube',
+        'v3',
+        developerKey=YOUTUBE_API_KEY,
+        static_discovery=False
+    )
+
     loop = asyncio.get_running_loop()
+    current_video_id = None
+    seen_users = set()
 
     while True:
         try:
             video_id = await get_live_video_id(youtube)
 
+            # ❗ если нет стрима
             if not video_id:
-                logger.info("Стрим не найден. Ждём 5 минут...")
+                logger.info("❌ Стрим не найден. Ждём 5 минут...")
                 await asyncio.sleep(300)
                 continue
 
-            url = f"https://www.youtube.com/watch?v={video_id}"
+            # ❗ если новый стрим
+            if video_id != current_video_id:
+                logger.info(f"🔥 Новый стрим: {video_id}")
 
-            logger.info("===================================")
-            logger.info(f"СТРИМ НАЙДЕН: {url}")
-            logger.info("===================================")
+                current_video_id = video_id
+                seen_users.clear()  # 💥 ВАЖНО
 
-            # ⚠️ даём чату “созреть” (особенно премьеры)
-            await asyncio.sleep(20)
+                url = f"https://www.youtube.com/watch?v={video_id}"
 
-            # запускаем chat-downloader в отдельном потоке
-            await loop.run_in_executor(
-                None,
-                chat_worker,
-                url,
-                seen_users,
-                loop
-            )
+                logger.info("===================================")
+                logger.info(f"СТРИМ: {url}")
+                logger.info("===================================")
 
-            logger.info("Чат завершён. Проверка через 5 минут...")
+                # даём чату стабилизироваться
+                await asyncio.sleep(20)
+
+                # запускаем поток чата
+                loop.run_in_executor(
+                    None,
+                    chat_worker,
+                    url,
+                    seen_users,
+                    loop
+                )
+
+            # ❗ проверка раз в 5 минут (экономим квоты)
             await asyncio.sleep(300)
 
         except Exception as e:
