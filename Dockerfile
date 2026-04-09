@@ -15,7 +15,6 @@ WORKDIR /app
 COPY . /app
 
 # Устанавливаем зависимости из requirements.txt
-RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Устанавливаем nest_asyncio (если ты его используешь для Twitch-бота)
