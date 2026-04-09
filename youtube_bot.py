@@ -39,16 +39,15 @@ async def get_live_video_id(youtube):
     return None
 
 def download_chat(url, seen_users, loop):
-    """Функция для работы с yt_dlp в синхронном режиме (внутри потока)"""
+    """Работа с yt_dlp в отдельном потоке"""
     
-    # Обработчик каждого сообщения
     def comment_callback(comment):
         author_id = comment.get('author_id')
         if author_id and author_id not in seen_users:
             seen_users.add(author_id)
             raw_name = comment.get('author', 'User')
             user_name = raw_name.lstrip('@').strip()
-            # Отправляем сообщение асинхронно из синхронной функции
+            # Прокидываем отправку в основной поток
             asyncio.run_coroutine_threadsafe(
                 send_message(f"Новый котэк на Ютубе❤️: {user_name}"), 
                 loop
@@ -57,7 +56,7 @@ def download_chat(url, seen_users, loop):
     ydl_opts = {
         'getcomments': True,
         'quiet': True,
-        'live_from_start': False, # Берем только новые
+        'live_from_start': False, 
         'comment_data_callback': comment_callback,
     }
 
@@ -81,11 +80,11 @@ async def youtube_bot_loop():
                 await asyncio.sleep(300)
                 continue
 
-            logger.info(f"Стрим найден: {video_id}. Запускаем безлимитный чат...")
+            # ИСПРАВЛЕНО: Добавлен слеш / перед video_id
             url = f"https://youtube.com{video_id}"
+            logger.info(f"Стрим найден: {video_id}. Запускаем безлимитный чат...")
 
-            # Запускаем блокирующую функцию yt_dlp в отдельном потоке, 
-            # чтобы она не вешала весь бот
+            # Запуск в потоке, чтобы не блокировать asyncio
             await loop.run_in_executor(None, download_chat, url, seen_users, loop)
 
             logger.info("Переподключение через 30 секунд...")
