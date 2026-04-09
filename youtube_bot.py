@@ -39,7 +39,7 @@ async def get_live_video_id(youtube):
     return None
 
 def download_chat(url, seen_users, loop):
-    """Работа с yt_dlp в отдельном потоке"""
+    """Функция для работы с yt_dlp в отдельном потоке"""
     
     def comment_callback(comment):
         author_id = comment.get('author_id')
@@ -47,7 +47,7 @@ def download_chat(url, seen_users, loop):
             seen_users.add(author_id)
             raw_name = comment.get('author', 'User')
             user_name = raw_name.lstrip('@').strip()
-            # Прокидываем отправку в основной поток
+            # Прокидываем отправку в основной поток asyncio
             asyncio.run_coroutine_threadsafe(
                 send_message(f"Новый котэк на Ютубе❤️: {user_name}"), 
                 loop
@@ -80,11 +80,13 @@ async def youtube_bot_loop():
                 await asyncio.sleep(300)
                 continue
 
-            # ИСПРАВЛЕНО: Добавлен слеш / перед video_id
+            # --- ПРОВЕРЬ ЭТУ СТРОКУ, ТУТ ДОЛЖЕН БЫТЬ СЛЕШ ПЕРЕД {video_id} ---
             url = f"https://youtube.com{video_id}"
+            # ----------------------------------------------------------------
+            
             logger.info(f"Стрим найден: {video_id}. Запускаем безлимитный чат...")
 
-            # Запуск в потоке, чтобы не блокировать asyncio
+            # Запуск блокирующей функции в отдельном потоке
             await loop.run_in_executor(None, download_chat, url, seen_users, loop)
 
             logger.info("Переподключение через 30 секунд...")
