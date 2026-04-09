@@ -1,5 +1,5 @@
 # Используем официальный образ Python
-FROM python:3.10-slim
+FROM python:3.9-slim
 
 # Устанавливаем необходимые системные зависимости
 RUN apt-get update && apt-get install -y \
@@ -15,6 +15,7 @@ WORKDIR /app
 COPY . /app
 
 # Устанавливаем зависимости из requirements.txt
+RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Устанавливаем nest_asyncio (если ты его используешь для Twitch-бота)
