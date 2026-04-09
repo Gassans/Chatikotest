@@ -1,23 +1,19 @@
 FROM python:3.10-slim
 
-# Системные зависимости
-RUN apt-get update && apt-get install -y \
-    gcc \
-    libffi-dev \
-    libssl-dev \
+# Устанавливаем только самое необходимое для работы сети
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Обновляем pip и устанавливаем зависимости
 COPY requirements.txt .
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# 1. Обновляем pip
-RUN pip install --upgrade pip
-
-# 2. Устанавливаем зависимости из файла
-RUN pip install --no-cache-dir -r requirements.txt
-
-# 3. ПРИНУДИТЕЛЬНО обновляем chat-downloader до последней версии
-RUN pip install --upgrade --no-cache-dir chat-downloader
-
+# Копируем проект
 COPY . .
+
+# Запуск через main.py
 CMD ["python", "main.py"]
