@@ -5,11 +5,11 @@ import yt_dlp
 from googleapiclient.discovery import build
 from telegram import Bot
 
-# Логирование
+# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Окружение
+# Переменные окружения
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
@@ -24,6 +24,7 @@ async def send_message(text):
         logger.error(f"Ошибка ТГ: {e}")
 
 async def get_live_video_id(youtube):
+    """Поиск активного стрима через API (100 квот)"""
     try:
         response = youtube.search().list(
             part='id',
@@ -35,11 +36,11 @@ async def get_live_video_id(youtube):
         if response.get('items'):
             return response['items'][0]['id']['videoId']
     except Exception as e:
-        logger.error(f"Ошибка API при поиске: {e}")
+        logger.error(f"Ошибка API поиска: {e}")
     return None
 
 def download_chat(url, seen_users, loop):
-    """Функция для работы с yt_dlp в отдельном потоке"""
+    """Запуск yt_dlp для мониторинга чата"""
     
     def comment_callback(comment):
         author_id = comment.get('author_id')
@@ -47,7 +48,7 @@ def download_chat(url, seen_users, loop):
             seen_users.add(author_id)
             raw_name = comment.get('author', 'User')
             user_name = raw_name.lstrip('@').strip()
-            # Прокидываем отправку в основной поток asyncio
+            # Отправка уведомления в основной цикл asyncio
             asyncio.run_coroutine_threadsafe(
                 send_message(f"Новый котэк на Ютубе❤️: {user_name}"), 
                 loop
@@ -64,7 +65,7 @@ def download_chat(url, seen_users, loop):
         try:
             ydl.download([url])
         except Exception as e:
-            logger.error(f"yt_dlp завершил работу: {e}")
+            logger.error(f"yt_dlp прервался: {e}")
 
 async def youtube_bot_loop():
     youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY, static_discovery=False)
@@ -76,24 +77,25 @@ async def youtube_bot_loop():
             video_id = await get_live_video_id(youtube)
             
             if not video_id:
-                logger.info("Стрим не найден. Ждем 5 минут.")
+                logger.info("Стрим не найден. Спим 5 минут...")
                 await asyncio.sleep(300)
                 continue
 
-            # --- ПРОВЕРЬ ЭТУ СТРОКУ, ТУТ ДОЛЖЕН БЫТЬ СЛЕШ ПЕРЕД {video_id} ---
-            url = f"https://youtube.com{video_id}"
-            # ----------------------------------------------------------------
+            # Формируем ссылку максимально явно
+            base_url = "https://youtube.com"
+            url = f"{base_url}{video_id}"
             
-            logger.info(f"Стрим найден: {video_id}. Запускаем безлимитный чат...")
+            logger.info(f"URL ДЛЯ ПРОВЕРКИ: {url}")
+            logger.info(f"Запускаем безлимитный чат для {video_id}...")
 
-            # Запуск блокирующей функции в отдельном потоке
+            # Запуск yt_dlp в отдельном потоке (executor)
             await loop.run_in_executor(None, download_chat, url, seen_users, loop)
 
-            logger.info("Переподключение через 30 секунд...")
+            logger.info("Пауза перед переподключением...")
             await asyncio.sleep(30)
 
         except Exception as e:
-            logger.error(f"Глобальная ошибка: {e}")
+            logger.error(f"Глобальная ошибка YouTube цикла: {e}")
             await asyncio.sleep(60)
 
 if __name__ == "__main__":
