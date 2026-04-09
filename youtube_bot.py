@@ -1,7 +1,7 @@
 import os
 import asyncio
 import logging
-import json
+import yt_dlp
 from googleapiclient.discovery import build
 from telegram import Bot
 
@@ -24,7 +24,6 @@ async def send_message(text):
         logger.error(f"Ошибка ТГ: {e}")
 
 async def get_live_video_id(youtube):
-    """Один запрос поиска (100 юнитов)"""
     try:
         response = youtube.search().list(
             part='id',
@@ -39,13 +38,42 @@ async def get_live_video_id(youtube):
         logger.error(f"Ошибка API при поиске: {e}")
     return None
 
+def download_chat(url, seen_users, loop):
+    """Функция для работы с yt_dlp в синхронном режиме (внутри потока)"""
+    
+    # Обработчик каждого сообщения
+    def comment_callback(comment):
+        author_id = comment.get('author_id')
+        if author_id and author_id not in seen_users:
+            seen_users.add(author_id)
+            raw_name = comment.get('author', 'User')
+            user_name = raw_name.lstrip('@').strip()
+            # Отправляем сообщение асинхронно из синхронной функции
+            asyncio.run_coroutine_threadsafe(
+                send_message(f"Новый котэк на Ютубе❤️: {user_name}"), 
+                loop
+            )
+
+    ydl_opts = {
+        'getcomments': True,
+        'quiet': True,
+        'live_from_start': False, # Берем только новые
+        'comment_data_callback': comment_callback,
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            ydl.download([url])
+        except Exception as e:
+            logger.error(f"yt_dlp завершил работу: {e}")
+
 async def youtube_bot_loop():
     youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY, static_discovery=False)
     seen_users = set()
+    loop = asyncio.get_running_loop()
 
     while True:
         try:
-            # 1. Находим видео (100 юнитов)
             video_id = await get_live_video_id(youtube)
             
             if not video_id:
@@ -53,43 +81,15 @@ async def youtube_bot_loop():
                 await asyncio.sleep(300)
                 continue
 
-            logger.info(f"Стрим найден: {video_id}. Запускаем безлимитное чтение чата...")
+            logger.info(f"Стрим найден: {video_id}. Запускаем безлимитный чат...")
             url = f"https://youtube.com{video_id}"
 
-            # 2. Запускаем yt-dlp. 
-            # --live-from-start может тянуть старые коменты, 
-            # поэтому мы просто читаем текущий поток.
-            process = await asyncio.create_subprocess_exec(
-                'yt-dlp', 
-                '--get-comments', 
-                '--comment-sort', 'newness', # берем новые
-                '--print', 'comment', 
-                '--quiet', 
-                url,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
+            # Запускаем блокирующую функцию yt_dlp в отдельном потоке, 
+            # чтобы она не вешала весь бот
+            await loop.run_in_executor(None, download_chat, url, seen_users, loop)
 
-            # Читаем вывод в реальном времени
-            while True:
-                line = await process.stdout.readline()
-                if not line:
-                    break # Если вывод кончился, значит процесс завершен
-                
-                try:
-                    data = json.loads(line.decode().strip())
-                    author_id = data.get('author_id')
-                    
-                    if author_id and author_id not in seen_users:
-                        seen_users.add(author_id)
-                        raw_name = data.get('author', 'User')
-                        user_name = raw_name.lstrip('@').strip()
-                        await send_message(f"Новый котэк на Ютубе❤️: {user_name}")
-                except Exception:
-                    continue
-
-            logger.info("Чат завершен. Перепроверка через 60 секунд.")
-            await asyncio.sleep(60)
+            logger.info("Переподключение через 30 секунд...")
+            await asyncio.sleep(30)
 
         except Exception as e:
             logger.error(f"Глобальная ошибка: {e}")
