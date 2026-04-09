@@ -21,11 +21,12 @@ bot = Bot(token=TELEGRAM_TOKEN)
 async def send_message(text):
     try:
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text)
-        logger.info(f"Сообщение отправлено: {text}")
+        logger.info(f"ТГ сообщение: {text}")
     except Exception as e:
-        logger.error(f"Ошибка отправки в Telegram: {e}")
+        logger.error(f"Ошибка ТГ: {e}")
 
 async def get_live_video_id(youtube, channel_id):
+    """Ищет активный стрим или премьеру. Тратит квоты API."""
     try:
         # Проверка активного лайва
         request = youtube.search().list(
@@ -38,7 +39,7 @@ async def get_live_video_id(youtube, channel_id):
         if response.get('items'):
             return response['items'][0]['id']['videoId']
         
-        # Проверка предстоящих трансляций (премьер)
+        # Проверка предстоящих трансляций
         request_upcoming = youtube.search().list(
             part='id',
             channelId=channel_id,
@@ -49,39 +50,41 @@ async def get_live_video_id(youtube, channel_id):
         if response_upcoming.get('items'):
             return response_upcoming['items'][0]['id']['videoId']
             
-    except HttpError as e:
-        logger.error(f"YouTube API Error: {e}")
     except Exception as e:
-        logger.error(f"Search Error: {e}")
+        logger.error(f"Ошибка поиска YouTube API: {e}")
     return None
 
 async def youtube_bot_loop():
-    # static_discovery=False убирает лишние ошибки в логах
+    # static_discovery=False убирает лишние алерты кэша
     youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY, static_discovery=False)
-    seen_users = set()
+    seen_users = set() # Список уникальных пользователей за сессию
     downloader = ChatDownloader()
 
     while True:
         try:
-            # 1. Получаем актуальный ID видео
+            # 1. Ищем ID видео (тратим квоту)
             video_id = await get_live_video_id(youtube, YOUTUBE_CHANNEL_ID)
             
             if not video_id:
-                logger.info("Стрим/премьера не найдены. Проверка через 5 минут...")
+                logger.info("Стрим не найден. Ждем 5 минут...")
                 await asyncio.sleep(300)
                 continue
 
-            logger.info(f"Подключение напрямую к чату ID: {video_id}")
+            logger.info(f"Стрим найден! ID: {video_id}. Подключаемся...")
 
+            # 2. Читаем чат (бесплатно, без квот API)
             try:
-                # Используем URL, но принудительно отключаем парсинг метаданных страницы
-                # Это должно убрать ошибку "Unable to parse initial video data"
-                url = f"https://youtube.com{video_id}"
+                # Параметры заставляют читалку ждать сообщения и пробовать реконнект
                 chat = downloader.get_chat(
-                    url=url,
-                    ignore_exceptions=['JSONDecodeError'] # Игнорируем ошибки кривого парсинга
+                    video_id, 
+                    params={
+                        'timeout': 3600,             # Держать сессию долго
+                        'retry_attempts': 10,        # Пытаться переподключиться при обрыве
+                        'continuation_fetch_sleep': 1 # Частота опроса чата в секундах
+                    }
                 )
                 
+                # Цикл будет работать, пока стрим идет
                 for message in chat:
                     author = message.get('author', {})
                     author_id = author.get('id')
@@ -91,23 +94,23 @@ async def youtube_bot_loop():
                         user_name = author.get('name', 'User').lstrip('@').strip()
                         await send_message(f"Новый котэк на Ютубе❤️: {user_name}")
                     
+                    # Минимальная пауза для асинхронности
                     await asyncio.sleep(0.1)
 
+                # Если мы вышли из цикла for - значит стрим реально кончился
+                logger.info("Чат пуст или завершен. Проверим статус стрима...")
+
             except Exception as e:
-                # Если ошибка 'Unable to parse', пробуем еще более простой метод
-                logger.error(f"Ошибка при чтении чата: {e}")
-                await asyncio.sleep(30)
+                logger.error(f"Ошибка внутри чата: {e}")
+                await asyncio.sleep(10) # Короткая пауза при ошибке чата
+                continue # Возврат к началу, чтобы снова проверить тот же video_id
 
-
-            logger.info("Цикл чата прерван. Перепроверка через 5 минут...")
-            await asyncio.sleep(300)
+            # Пауза перед следующей проверкой квот после завершения стрима
+            await asyncio.sleep(60)
 
         except Exception as e:
-            logger.error(f"Глобальная ошибка в youtube_bot_loop: {e}")
+            logger.error(f"Глобальная ошибка: {e}")
             await asyncio.sleep(60)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(youtube_bot_loop())
-    except KeyboardInterrupt:
-        logger.info("Бот выключен пользователем")
+    asyncio.run(youtube_bot_loop())
