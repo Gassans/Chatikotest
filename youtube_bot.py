@@ -24,41 +24,52 @@ async def send_message(text):
         logger.error(f"Ошибка Telegram: {e}")
 
 
-# 🔍 ищем стрим (редко)
+# 🔥 ОБНОВЛЕННАЯ ФУНКЦИЯ (поддержка LIVE + PREMIERE)
 async def get_live_chat_id(youtube):
     try:
+        # Берем последние видео канала
         search = youtube.search().list(
             part='id',
             channelId=YOUTUBE_CHANNEL_ID,
-            eventType='live',
             type='video',
-            maxResults=1
+            order='date',
+            maxResults=5
         ).execute()
 
         if not search.get('items'):
             return None, None
 
-        video_id = search['items'][0]['id']['videoId']
+        video_ids = [
+            item['id']['videoId']
+            for item in search['items']
+            if 'videoId' in item['id']
+        ]
 
+        if not video_ids:
+            return None, None
+
+        # Получаем liveStreamingDetails
         details = youtube.videos().list(
             part='liveStreamingDetails',
-            id=video_id
+            id=','.join(video_ids)
         ).execute()
 
-        items = details.get('items')
-        if not items:
-            return video_id, None
+        for item in details.get('items', []):
+            live_details = item.get('liveStreamingDetails', {})
+            chat_id = live_details.get('activeLiveChatId')
 
-        chat_id = items[0].get('liveStreamingDetails', {}).get('activeLiveChatId')
+            # 👉 если есть chat_id — значит чат открыт (стрим или премьера)
+            if chat_id:
+                video_id = item['id']
+                return video_id, chat_id
 
-        return video_id, chat_id
+        return None, None
 
     except Exception as e:
         logger.error(f"Ошибка API: {e}")
         return None, None
 
 
-# 🔥 получаем continuation (ОДИН РАЗ)
 async def get_initial_continuation(video_id):
     url = f"https://www.youtube.com/watch?v={video_id}"
 
@@ -74,7 +85,6 @@ async def get_initial_continuation(video_id):
     return None
 
 
-# 🔥 основной цикл чата
 async def chat_loop(continuation, seen_users):
     url = "https://www.youtube.com/youtubei/v1/live_chat/get_live_chat"
 
@@ -83,7 +93,7 @@ async def chat_loop(continuation, seen_users):
         "User-Agent": "Mozilla/5.0"
     }
 
-    is_first_batch = True  # 👈 ВАЖНО
+    is_first_batch = True
 
     async with aiohttp.ClientSession() as session:
         while True:
@@ -105,7 +115,6 @@ async def chat_loop(continuation, seen_users):
                               .get("liveChatContinuation", {}) \
                               .get("actions", [])
 
-                # ❌ ПЕРВЫЙ БАТЧ ПРОПУСКАЕМ
                 if is_first_batch:
                     logger.info("Пропускаем старые сообщения...")
                     is_first_batch = False
@@ -129,7 +138,6 @@ async def chat_loop(continuation, seen_users):
 
                             await send_message(f"Новый котэк на Ютубе❤️: {name}")
 
-                # 🔁 новый continuation
                 continuations = data.get("continuationContents", {}) \
                                     .get("liveChatContinuation", {}) \
                                     .get("continuations", [])
@@ -142,14 +150,13 @@ async def chat_loop(continuation, seen_users):
                         .get("timedContinuationData", {}) \
                         .get("continuation")
 
-                await asyncio.sleep(2)  # ⚡ быстро
+                await asyncio.sleep(2)
 
             except Exception as e:
                 logger.error(f"Ошибка chat_loop: {e}")
                 await asyncio.sleep(5)
 
 
-# 🚀 главный цикл
 async def main():
     youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY, static_discovery=False)
 
@@ -161,17 +168,16 @@ async def main():
             video_id, chat_id = await get_live_chat_id(youtube)
 
             if not video_id or not chat_id:
-                logger.info("Стрим не найден. Ждём 5 минут...")
+                logger.info("Стрим/премьера не найдены. Ждём 5 минут...")
                 await asyncio.sleep(300)
                 continue
 
-            # 🔥 если новый стрим — сбрасываем пользователей
             if video_id != current_video_id:
-                logger.info("Новый стрим → очищаем список пользователей")
+                logger.info("Новый стрим или премьера → очищаем список пользователей")
                 seen_users.clear()
                 current_video_id = video_id
 
-            logger.info(f"Стрим найден: {video_id}")
+            logger.info(f"Подключаемся к видео: {video_id}")
 
             continuation = await get_initial_continuation(video_id)
 
