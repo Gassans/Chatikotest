@@ -24,10 +24,9 @@ async def send_message(text):
         logger.error(f"Ошибка Telegram: {e}")
 
 
-# 🔥 ОБНОВЛЕННАЯ ФУНКЦИЯ (поддержка LIVE + PREMIERE)
+# 🔥 ОБНОВЛЕНО: теперь ловит и стримы, и премьеры
 async def get_live_chat_id(youtube):
     try:
-        # Берем последние видео канала
         search = youtube.search().list(
             part='id',
             channelId=YOUTUBE_CHANNEL_ID,
@@ -48,7 +47,6 @@ async def get_live_chat_id(youtube):
         if not video_ids:
             return None, None
 
-        # Получаем liveStreamingDetails
         details = youtube.videos().list(
             part='liveStreamingDetails',
             id=','.join(video_ids)
@@ -58,7 +56,6 @@ async def get_live_chat_id(youtube):
             live_details = item.get('liveStreamingDetails', {})
             chat_id = live_details.get('activeLiveChatId')
 
-            # 👉 если есть chat_id — значит чат открыт (стрим или премьера)
             if chat_id:
                 video_id = item['id']
                 return video_id, chat_id
@@ -70,18 +67,29 @@ async def get_live_chat_id(youtube):
         return None, None
 
 
+# 🔥 ОБНОВЛЕНО: более надежный continuation (для премьер тоже)
 async def get_initial_continuation(video_id):
     url = f"https://www.youtube.com/watch?v={video_id}"
 
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
     async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
+        async with session.get(url, headers=headers) as resp:
             html = await resp.text()
 
-    match = re.search(r'"continuation":"(.*?)"', html)
-
+    # основной вариант
+    match = re.search(r'"continuation":"([^"]+)"', html)
     if match:
         return match.group(1)
 
+    # fallback для премьер
+    match = re.search(r'"reloadContinuationData":\{"continuation":"([^"]+)"', html)
+    if match:
+        return match.group(1)
+
+    logger.error("Не удалось получить continuation")
     return None
 
 
@@ -182,7 +190,6 @@ async def main():
             continuation = await get_initial_continuation(video_id)
 
             if not continuation:
-                logger.error("Не удалось получить continuation")
                 await asyncio.sleep(60)
                 continue
 
