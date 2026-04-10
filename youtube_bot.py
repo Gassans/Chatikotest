@@ -24,7 +24,7 @@ async def send_message(text):
         logger.error(f"Ошибка Telegram: {e}")
 
 
-# 🔥 ОБНОВЛЕНО: теперь ловит и стримы, и премьеры
+
 async def get_live_chat_id(youtube):
     try:
         search = youtube.search().list(
@@ -67,7 +67,7 @@ async def get_live_chat_id(youtube):
         return None, None
 
 
-# 🔥 ОБНОВЛЕНО: более надежный continuation (для премьер тоже)
+
 async def get_initial_continuation(video_id):
     url = f"https://www.youtube.com/watch?v={video_id}"
 
